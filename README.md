@@ -6,7 +6,6 @@
 
 - firmware: ESP32 펌웨어
 - backend: 서버
-- frontend: 대시보드
 - docs: 문서
 
 ## 프로젝트 목표

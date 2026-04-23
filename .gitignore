@@ -1,0 +1,29 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node.js
+node_modules/
+dist/
+coverage/
+
+# Logs
+*.log
+
+# ESP-IDF / firmware
+firmware/build/
+firmware/sdkconfig.old
+firmware/.idf_component_manager/
+
+# Misc
+*.tmp
+*.swp
