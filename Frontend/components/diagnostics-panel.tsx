@@ -17,7 +17,9 @@ function formatValue(value: number | null, unit = ''): string {
 }
 
 export function DiagnosticsPanel({ latestReading, readings, onGradientClick }: DiagnosticsPanelProps) {
-  const gradient = getGradient(latestReading)
+  const gradient = latestReading.sensor_status.hot_air_ok && latestReading.sensor_status.cool_air_ok
+    ? getGradient(latestReading)
+    : null
   const stateChanges = readings.filter((reading) => reading.state_changed)
   const fault = latestReading.fault
   const diagnosis = latestReading.diagnosis

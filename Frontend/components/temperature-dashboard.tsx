@@ -2,11 +2,11 @@
 
 import { useState } from 'react'
 import { useEffect } from 'react'
-import { Settings } from 'lucide-react'
+import { ArrowRight, Lightbulb, Settings } from 'lucide-react'
 import { AlertNotification } from './alert-notification'
 import { AirTempsCard } from './air-temps-card'
 import { DiagnosticsPanel } from './diagnostics-panel'
-import { HeatSourceStatus } from './heat-source-status'
+import { getObservedHeat, HeatSourceStatus } from './heat-source-status'
 import { HistorySheet } from './history-sheet'
 import { RecentMeasurements } from './recent-measurements'
 import { SettingsSheet } from './settings-sheet'
@@ -79,11 +79,81 @@ function createEmptyReading(nodeId: string): TerrariumReading {
   }
 }
 
+const chartTitles = { hot: '온열 공기 온도', cool: '냉각 공기 온도', surface: '온열 표면 온도', gradient: '두 구역 공기 온도차' }
+
+function DiagnosticGuide({ reading, stale }: { reading: TerrariumReading | null; stale: boolean }) {
+  const state = reading?.state
+  const label = state === 'critical' ? '위험' : state === 'warning' ? '주의' : state === 'device_fault' ? '장치 이상' : state === 'normal' ? '정상' : '진단 데이터 없음'
+  const tone = stale ? 'border-gray-300 bg-gray-50 text-gray-900' : state === 'critical' ? 'border-red-300 bg-red-50 text-red-950' : state === 'warning' ? 'border-amber-300 bg-amber-50 text-amber-950' : state === 'normal' ? 'border-emerald-300 bg-emerald-50 text-emerald-950' : 'border-gray-300 bg-gray-50 text-gray-900'
+  const level = state === 'critical' ? 2 : 1
+  const causes: string[] = []
+  const actions: string[] = []
+  if (reading && (state === 'critical' || state === 'warning')) {
+    if (reading.l_safety === level) { causes.push('온열 표면 고온'); actions.push('표면 온도와 열원 출력을 확인하세요.') }
+    if (reading.l_match === level) { causes.push('열원 ON 추정 대비 표면 온도 상승 부족'); actions.push('램프 발열과 표면 센서 부착 위치를 확인하세요.') }
+    if (reading.l_grad === level) { causes.push('온열·냉각 구역 온도차 부족'); actions.push('두 공기 센서의 위치와 구역별 온도를 확인하세요.') }
+  }
+  if (state === 'device_fault') {
+    causes.push('센서 또는 측정 데이터에 이상이 감지됐습니다.')
+    actions.push('센서 연결과 전원을 확인하세요. 기존 측정값을 현재 상태로 간주하지 마세요.')
+  }
+  const fallback = state === 'normal' ? '최근 ESP32 진단에서 이상이 보고되지 않았습니다.' : state ? '세부 원인은 진단 지표와 이력을 확인하세요.' : '사육장 노드의 측정 기록을 기다리고 있습니다.'
+  return (
+    <section aria-live="polite" className={`rounded-2xl border p-4 shadow-sm ${tone}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-bold">{stale && reading ? '마지막 진단 · ' : ''}{label}</h2>
+        {reading && <span className="text-xs">수신 {reading.timestamp.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} KST</span>}
+      </div>
+      <p className="mt-1 text-sm">{causes.length ? causes.join(' · ') : fallback}</p>
+      {actions.length > 0 && <p className="mt-2 text-sm font-semibold">{stale ? '마지막 진단의 점검 안내: ' : '점검: '}{actions.join(' ')}</p>}
+    </section>
+  )
+}
+
+function TerrariumMap({ reading, onChart }: { reading: TerrariumReading | null; onChart: (zone: keyof typeof chartTitles) => void }) {
+  const heat = getObservedHeat(reading).on
+  const status = reading?.sensor_status
+  const gradient = reading && status?.hot_air_ok && status.cool_air_ok ? getGradient(reading) : null
+  const value = (temp: number | null | undefined) => typeof temp === 'number' && Number.isFinite(temp) ? `${temp.toFixed(1)} °C` : '--'
+  const sensor = (zone: keyof typeof chartTitles, temp: number | null | undefined, ok: boolean | undefined) => (
+    <button type="button" onClick={() => onChart(zone)} className="w-full rounded-xl border border-white bg-white/90 p-2.5 text-left shadow-sm hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2">
+      <span className="block text-xs font-medium text-gray-700">{chartTitles[zone]}</span>
+      <span className="block text-lg font-bold tabular-nums">{value(ok === true ? temp : null)}</span>
+      <span className={`text-[11px] ${ok === false ? 'text-red-700' : 'text-gray-600'}`}>{ok === false ? '센서 이상' : ok === true && value(temp) !== '--' ? '측정 가능' : '확인 불가'}</span>
+    </button>
+  )
+  return (
+    <section className="rounded-2xl bg-white p-4 shadow-sm">
+      <h2 className="text-sm font-bold">사육장 열환경 단면도</h2>
+      <p className="mb-3 mt-1 text-xs text-gray-600">{!reading ? '측정 데이터 없음' : reading.message_type === 'summary' ? '최근 구간 평균' : '기록 시점 측정값'} · 센서 카드를 누르면 추이가 열립니다.</p>
+      <div className="grid grid-cols-2 overflow-hidden rounded-xl border border-gray-300">
+        <div className="border-r border-dashed border-gray-300 bg-orange-50 p-2 sm:p-4">
+          <p className="mb-2 text-xs font-bold text-orange-900">온열 구역</p>
+          <div className="mb-2 flex min-h-10 items-center gap-1.5 text-xs text-orange-900">
+            <Lightbulb aria-hidden="true" className={`size-5 shrink-0 ${heat === true ? 'fill-amber-300 text-amber-800 motion-safe:animate-pulse' : 'text-gray-500'}`} />
+            <span>{heat === null ? '열원 확인 불가' : heat ? '열원 ON 추정' : '열원 OFF 추정'}</span>
+          </div>
+          {sensor('hot', reading?.hot_air_temp_c, status?.hot_air_ok)}
+        </div>
+        <div className="bg-sky-50 p-2 sm:p-4">
+          <p className="mb-2 text-xs font-bold text-sky-900">냉각 구역</p>
+          <p className="mb-2 flex min-h-10 items-center text-xs text-sky-900">열원 반대편</p>
+          {sensor('cool', reading?.cool_air_temp_c, status?.cool_air_ok)}
+        </div>
+        <button type="button" onClick={() => onChart('gradient')} className="col-span-2 flex flex-wrap items-center justify-center gap-2 border-y border-gray-200 bg-gray-50 p-2 text-xs font-semibold hover:bg-gray-100">
+          온열 공기 <ArrowRight aria-hidden="true" className="size-4" /> 냉각 공기 <span>ΔT (온열 − 냉각): {value(gradient)}</span>
+        </button>
+        <div className="border-r border-dashed border-orange-200 bg-orange-100 p-2 sm:p-4">{sensor('surface', reading?.surface_temp_c, status?.hot_surface_ok)}</div>
+        <div className="flex items-center justify-center bg-sky-100 p-2 text-xs text-sky-900">냉각 구역 바닥</div>
+      </div>
+    </section>
+  )
+}
+
 export function TemperatureDashboard() {
   const [historySheetOpen, setHistorySheetOpen] = useState(false)
   const [settingsSheetOpen, setSettingsSheetOpen] = useState(false)
-  const [activeChartZone, setActiveChartZone] = useState<'hot' | 'cool' | 'gradient' | null>(null)
-  const [selectedPeriod, setSelectedPeriod] = useState<'24h' | '7d' | '30d'>('24h')
+  const [activeChartZone, setActiveChartZone] = useState<'hot' | 'cool' | 'gradient' | 'surface' | null>(null)
   const [readings, setReadings] = useState<TerrariumReading[]>([])
   const [latestReading, setLatestReading] = useState<TerrariumReading | null>(null)
   const [node, setNode] = useState<Node | null>(null)
@@ -93,9 +163,12 @@ export function TemperatureDashboard() {
 
   useEffect(() => {
     let cancelled = false
+    let pending = false
     const nodeId = getDefaultNodeId()
 
     const loadDashboardData = async (showLoading = false) => {
+      if (cancelled || pending) return
+      pending = true
       if (showLoading) setIsLoading(true)
 
       try {
@@ -115,10 +188,8 @@ export function TemperatureDashboard() {
       } catch (error) {
         if (cancelled) return
         setApiError(error instanceof Error ? error.message : 'API connection failed')
-        setLatestReading(null)
-        setReadings([])
-        setHeartbeat(null)
       } finally {
+        pending = false
         if (!cancelled && showLoading) setIsLoading(false)
       }
     }
@@ -135,7 +206,6 @@ export function TemperatureDashboard() {
   const hasLiveReading = latestReading !== null
   const displayReading = latestReading ?? createEmptyReading(getDefaultNodeId())
   const state = displayReading.state
-  const timestamp = new Date(displayReading.timestamp)
   const heartbeatOnline = isHeartbeatOnline(heartbeat)
   const heartbeatReceivedAt = heartbeat?.received_at ? new Date(heartbeat.received_at) : null
   const heartbeatLabel = heartbeatReceivedAt
@@ -183,7 +253,7 @@ export function TemperatureDashboard() {
                     heartbeatOnline ? 'animate-pulse bg-emerald-500' : 'bg-gray-400'
                   }`}
                 />
-                {heartbeatOnline ? 'MQTT online' : 'MQTT offline'}
+                {apiError || !heartbeatReceivedAt ? '연결 확인 불가' : heartbeatOnline ? 'MQTT online' : 'MQTT offline'}
               </span>
             </div>
             <span className="mt-0.5 font-mono text-[9px] text-gray-400 md:text-[10px]">
@@ -219,10 +289,13 @@ export function TemperatureDashboard() {
             {isLoading
               ? 'Loading backend data...'
               : apiError
-                ? `Backend unavailable: ${apiError}`
+                ? hasLiveReading ? 'API 갱신 실패 · 마지막 수신 데이터 표시 중' : 'API 연결 실패 · 표시할 데이터 없음'
                 : 'No readings have been received yet.'}
           </div>
         )}
+
+        <DiagnosticGuide reading={latestReading} stale={Boolean(apiError) || (Boolean(heartbeatReceivedAt) && !heartbeatOnline)} />
+        <TerrariumMap reading={latestReading} onChart={setActiveChartZone} />
 
         <SurfaceTempCard
           surfaceTemp={displayReading.surface_temp_c}
@@ -258,80 +331,28 @@ export function TemperatureDashboard() {
         <DialogContent className="max-w-[95vw] overflow-hidden rounded-2xl border-none bg-white p-0 shadow-xl sm:max-w-[500px]">
           <DialogTitle className="sr-only">Zone Temperature Chart</DialogTitle>
 
-          <div className="bg-gray-50 px-5 pb-2 pt-5">
-            <div className="grid grid-cols-3 gap-1 rounded-xl bg-gray-200/70 p-1">
-              {(['24h', '7d', '30d'] as const).map((period) => (
-                <button
-                  key={period}
-                  onClick={() => setSelectedPeriod(period)}
-                  className={`rounded-lg py-1.5 text-xs font-semibold transition-all ${
-                    selectedPeriod === period
-                      ? 'bg-white text-gray-900 shadow-sm'
-                      : 'text-gray-500 hover:text-gray-900'
-                  }`}
-                >
-                  {period}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {(() => {
-            const now = new Date()
-            const filteredReadings = readings.filter((reading) => {
-              const diffTime = now.getTime() - new Date(reading.timestamp).getTime()
-              if (selectedPeriod === '24h') return diffTime <= 24 * 60 * 60 * 1000
-              if (selectedPeriod === '7d') return diffTime <= 7 * 24 * 60 * 60 * 1000
-              return diffTime <= 30 * 24 * 60 * 60 * 1000
-            })
-
-            const chartData = filteredReadings
-              .map((reading) => ({
-                timestamp: new Date(reading.timestamp),
-                temperature:
-                  activeChartZone === 'hot'
-                    ? reading.hot_air_temp_c
-                    : activeChartZone === 'cool'
-                      ? reading.cool_air_temp_c
-                      : getGradient(reading),
-              }))
-              .filter(
-                (item): item is { timestamp: Date; temperature: number } =>
-                  item.temperature !== null && item.temperature !== undefined
-              )
-
-            return (
-              <div className="p-1">
-                {activeChartZone === 'hot' && (
-                  <ZoneChart
-                    title="Hot Zone"
-                    subtitle={`Last ${selectedPeriod} temperature trend`}
-                    data={chartData}
-                    type="hot"
-                  />
-                )}
-
-                {activeChartZone === 'cool' && (
-                  <ZoneChart
-                    title="Cool Zone"
-                    subtitle={`Last ${selectedPeriod} temperature trend`}
-                    data={chartData}
-                    type="cool"
-                  />
-                )}
-
-                {activeChartZone === 'gradient' && (
-                  <ZoneChart
-                    title="Temperature Gradient"
-                    subtitle={`Last ${selectedPeriod} gradient trend`}
-                    data={chartData}
-                    type="gradient"
-                    referenceLabel="Normal >=10C"
-                  />
-                )}
-              </div>
-            )
-          })()}
+          {activeChartZone && (
+            <ZoneChart
+              title={chartTitles[activeChartZone]}
+              subtitle="최근 수신 기록 최대 30건 · 시간축: 서버 수신 시각"
+              type={activeChartZone}
+              data={readings.map(reading => {
+                const heat = getObservedHeat(reading)
+                return {
+                  timestamp: reading.timestamp,
+                  heatOn: heat.on,
+                  heatDurationMs: heat.durationMs,
+                  temperature: activeChartZone === 'surface'
+                    ? (reading.sensor_status.hot_surface_ok ? reading.surface_temp_c : null)
+                    : activeChartZone === 'hot'
+                      ? (reading.sensor_status.hot_air_ok ? reading.hot_air_temp_c : null)
+                      : activeChartZone === 'cool'
+                        ? (reading.sensor_status.cool_air_ok ? reading.cool_air_temp_c : null)
+                        : (reading.sensor_status.hot_air_ok && reading.sensor_status.cool_air_ok ? getGradient(reading) : null),
+                }
+              })}
+            />
+          )}
         </DialogContent>
       </Dialog>
 
@@ -340,3 +361,4 @@ export function TemperatureDashboard() {
     </div>
   )
 }
+
